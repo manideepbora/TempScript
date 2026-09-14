@@ -1,11 +1,12 @@
-Setup:
+## macOS setup
 
-bash
+```bash
 python3 -m venv venv && source venv/bin/activate
-pip install torch torchvision open_clip_torch pillow pillow-heif imagehash opencv-python numpy tqdm
+python -m pip install torch torchvision open_clip_torch pillow pillow-heif imagehash opencv-python numpy tqdm
 python photo_triage.py ~/Pictures
+```
 
-Windows (PowerShell):
+## Windows setup (PowerShell)
 
 ```powershell
 py -m venv venv
@@ -30,19 +31,31 @@ py photo_triage.py "$env:USERPROFILE\Pictures" --no-clip
 
 ## Optional local LLM judge
 
-On the machine that will process your photos, install [Ollama](https://ollama.com)
-and download a vision-capable model. Run these there, not on this machine:
+Install [Ollama](https://ollama.com) on the machine that will process your
+photos, then download a vision-capable model. This model runs on your computer;
+the script sends resized previews only to Ollama's loopback API at
+`http://127.0.0.1:11434`, never to a cloud service.
+
+### macOS
 
 ```bash
 ollama pull qwen2.5vl:7b
-ollama serve
-python photo_triage.py ~/Pictures --llm-judge
+ollama serve  # only when the Ollama service is not already running
+python photo_triage.py ~/Pictures --llm-judge          # dry run
+python photo_triage.py ~/Pictures --llm-judge --apply  # move reviewed rejects
 ```
 
-`--llm-judge` sends each candidate group's resized JPEG previews only to
-Ollama's loopback API at `http://127.0.0.1:11434`. No photo is sent to a cloud
-service. The model subjectively selects the strongest composition, expression,
-moment, focus, and exposure. Use a different downloaded local vision model with
+### Windows (PowerShell)
+
+```powershell
+ollama pull qwen2.5vl:7b
+ollama serve  # only when the Ollama service is not already running
+py photo_triage.py "$env:USERPROFILE\Pictures" --llm-judge          # dry run
+py photo_triage.py "$env:USERPROFILE\Pictures" --llm-judge --apply  # move reviewed rejects
+```
+
+The model subjectively selects the strongest composition, expression, moment,
+focus, and exposure. Use another downloaded local vision model with
 `--llm-model MODEL_NAME`, for example `--llm-model llava`. Each group is capped
 at the eight strongest metric candidates, and normal metric scoring is used if
 the local model cannot respond.
