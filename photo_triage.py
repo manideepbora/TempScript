@@ -26,9 +26,14 @@ Usage:
 """
 
 import argparse
+import base64
 import csv
+from io import BytesIO
+import json
 import shutil
 import sys
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from collections import defaultdict
 from pathlib import Path
 
@@ -149,10 +154,51 @@ def quality_flags(m, blur_threshold):
 
 def keeper_score(m):
     """Used to pick the best photo out of a duplicate group."""
+    # Midtones near 128 preserve detail better than frames biased toward either
+    # extreme. Clipped shadows/highlights receive an additional penalty.
+    exposure_balance = 1.0 - abs(m["brightness"] - 128.0) / 128.0
     return (np.log1p(m["sharpness"]) * 2.0
             + min(m["megapixels"], 24) * 0.15
             + m["contrast"] * 0.02
-            - (m["blown"] + m["crushed"]) * 3.0)
+            + exposure_balance * 1.5
+            - (m["blown"] + m["crushed"]) * 6.0)
+
+
+def llm_choose_best(group, model):
+    """Ask a local Ollama vision model to select the best shot, or return None."""
+    images = []
+    for path in group:
+        try:
+            preview = load_rgb(path, max_side=768)
+            encoded = BytesIO()
+            preview.save(encoded, format="JPEG", quality=88)
+            images.append(base64.b64encode(encoded.getvalue()).decode("ascii"))
+        except Exception:
+            return None
+
+    prompt = (
+        "You are choosing the best photo from a sequence. Images are ordered "
+        "from 1 onward. Prefer the image with the strongest composition, subject "
+        "expression or moment, focus, and natural exposure. Avoid clipped, blurry, "
+        "awkward, or accidental frames. Reply with JSON only: {\"best\": NUMBER}."
+    )
+    payload = json.dumps({
+        "model": model,
+        "stream": False,
+        "format": "json",
+        "messages": [{"role": "user", "content": prompt, "images": images}],
+    }).encode("utf-8")
+    request = Request("http://127.0.0.1:11434/api/chat", payload,
+                      {"Content-Type": "application/json"})
+    try:
+        with urlopen(request, timeout=120) as response:
+            answer = json.loads(response.read())["message"]["content"]
+        choice = json.loads(answer)["best"]
+        if isinstance(choice, int) and 1 <= choice <= len(images):
+            return group[choice - 1]
+    except (KeyError, TypeError, ValueError, URLError, OSError):
+        pass
+    return None
 
 
 # -------------------------------------------------------------- stage 1: phash
@@ -274,6 +320,10 @@ def main():
                     help="cosine similarity for same-scene (default 0.94)")
     ap.add_argument("--blur-threshold", type=float, default=45.0,
                     help="Laplacian variance below this is 'blurry' (default 45)")
+    ap.add_argument("--llm-judge", action="store_true",
+                    help="use a local Ollama vision model to choose the best group member")
+    ap.add_argument("--llm-model", default="qwen2.5vl:7b",
+                    help="local Ollama vision model for --llm-judge (default qwen2.5vl:7b)")
     args = ap.parse_args()
 
     root = Path(args.folder).expanduser().resolve()
@@ -319,8 +369,16 @@ def main():
             if len(group) < 2:
                 continue
             group_id += 1
-            best = max(group, key=lambda p: keeper_score(metrics[p])
-                       if p in metrics else -1e9)
+            metric_best = max(group, key=lambda p: keeper_score(metrics[p])
+                              if p in metrics else -1e9)
+            judge_candidates = sorted(
+                group,
+                key=lambda p: keeper_score(metrics[p]) if p in metrics else -1e9,
+                reverse=True,
+            )[:8]
+            best = (llm_choose_best(judge_candidates, args.llm_model)
+                    if args.llm_judge else None)
+            best = best or metric_best
             for p in group:
                 if p is not best:
                     verdict[p] = (kind, f"{kind} of {best.name}", group_id)
