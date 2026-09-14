@@ -201,6 +201,43 @@ def llm_choose_best(group, model):
     return None
 
 
+def llm_quality_verdict(path, model):
+    """Classify one photo with local Ollama, or return None if it cannot decide."""
+    try:
+        preview = load_rgb(path, max_side=768)
+        encoded = BytesIO()
+        preview.save(encoded, format="JPEG", quality=88)
+        image = base64.b64encode(encoded.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+    prompt = (
+        "Assess whether this photo belongs in a personal photo library. Reject only "
+        "clearly unsuccessful shots: closed eyes or an unflattering expression when "
+        "a person is the subject, missed focus, severe motion blur, accidental "
+        "framing, obstructed subject, or severe over/underexposure. Keep intentional "
+        "artistic choices, candid moments, and photos with no people. Reply with JSON "
+        'only: {"verdict": "keep" or "reject", "reason": "brief reason"}. '
+    )
+    payload = json.dumps({
+        "model": model,
+        "stream": False,
+        "format": "json",
+        "messages": [{"role": "user", "content": prompt, "images": [image]}],
+    }).encode("utf-8")
+    request = Request("http://127.0.0.1:11434/api/chat", payload,
+                      {"Content-Type": "application/json"})
+    try:
+        with urlopen(request, timeout=120) as response:
+            answer = json.loads(response.read())["message"]["content"]
+        result = json.loads(answer)
+        if result["verdict"] in {"keep", "reject"}:
+            return result["verdict"], str(result.get("reason", "LLM judgment"))
+    except (KeyError, TypeError, ValueError, URLError, OSError):
+        pass
+    return None
+
+
 # -------------------------------------------------------------- stage 1: phash
 
 def compute_hashes(paths):
@@ -324,6 +361,8 @@ def main():
                     help="use a local Ollama vision model to choose the best group member")
     ap.add_argument("--llm-model", default="qwen2.5vl:7b",
                     help="local Ollama vision model for --llm-judge (default qwen2.5vl:7b)")
+    ap.add_argument("--llm-quality", action="store_true",
+                    help="use a local Ollama vision model to reject clearly bad individual photos")
     args = ap.parse_args()
 
     root = Path(args.folder).expanduser().resolve()
@@ -389,6 +428,14 @@ def main():
         flags = quality_flags(m, args.blur_threshold)
         if flags:
             verdict[p] = ("low_quality", ", ".join(flags), 0)
+
+    if args.llm_quality:
+        for p in tqdm(paths, desc="LLM quality", unit="img"):
+            if p in verdict:
+                continue
+            result = llm_quality_verdict(p, args.llm_model)
+            if result and result[0] == "reject":
+                verdict[p] = ("low_quality", f"LLM: {result[1]}", 0)
 
     # Report
     report = root / "photo_triage_report.csv"

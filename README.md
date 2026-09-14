@@ -60,6 +60,25 @@ focus, and exposure. Use another downloaded local vision model with
 at the eight strongest metric candidates, and normal metric scoring is used if
 the local model cannot respond.
 
+### Reject individually bad photos
+
+`--llm-judge` only compares similar images, so it cannot reject a poor photo
+that is not in a group. Add `--llm-quality` to inspect every remaining photo for
+clear failures such as closed eyes, missed focus, obstructed subjects,
+accidental framing, or severe exposure problems:
+
+```bash
+python photo_triage.py ~/Pictures --llm-judge --llm-quality
+```
+
+```powershell
+py photo_triage.py "$env:USERPROFILE\Pictures" --llm-judge --llm-quality
+```
+
+This makes one local model request per image, so it can be slow. Always begin
+with a dry run and review `photo_triage_report.csv`; subjective LLM rejections
+are recorded as `LLM: ...` in the report's reason column.
+
 It defaults to a dry run: it writes photo_triage_report.csv next to your photos and moves nothing. Open that in Numbers, sort by verdict, and see whether the calls look right. When you're happy, re-run with --apply and rejects get moved into _photo_review/, sorted by reason, with duplicate groups kept together in their own subfolders so you can compare the rejected shot against the one it kept.
 
 Two things worth tuning after the first pass. --blur-threshold is the one that'll need adjusting — 45 is a reasonable default, but soft-focus portraits and intentionally shallow depth-of-field shots score low, so check what landed in low_quality/ and raise or lower it. And --clip-threshold at 0.94 is deliberately strict; drop it to 0.90 if burst sequences aren't getting grouped, but below about 0.88 it starts lumping together photos that merely share a subject.
